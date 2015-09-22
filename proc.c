@@ -464,3 +464,9 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+int
+shutdown(void)
+{
+	return poweroff();
+}
