@@ -10,11 +10,6 @@ analyze all the related code.
 2. Implement Round Robin Scheduling algorithm. To do that you need implement
 time sharing mechanism first and then enable round robin scheduling.    
 
-3. Challenge: implement Stride Scheduling algorithm. Stride scheduling is a type
-of scheduling mechanism that has been introduced as a simple concept to achieve
-proportional CPU capacity reservation among concurrent processes. Use Google to
-find out more information about it.    
-
 ### 1. Overview
 
 In swtch.s:
@@ -298,4 +293,172 @@ From the code we can know that the implementation in xv6 is naive.
 
 ### 2. Round-robin and time share
 
-Is the algorithm implemented in the xv6?
+The scheduler is shown below:
+
+```c
+//PAGEBREAK: 42
+// Per-CPU process scheduler.
+// Each CPU calls scheduler() after setting itself up.
+// Scheduler never returns.  It loops, doing:
+//  - choose a process to run
+//  - swtch to start running that process
+//  - eventually that process transfers control
+//      via swtch back to the scheduler.
+void
+scheduler(void)
+{
+  struct proc *p;
+
+  for(;;){
+    // Enable interrupts on this processor.
+    sti();
+
+    // Loop over process table looking for process to run.
+    acquire(&ptable.lock);
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state != RUNNABLE)
+        continue;
+
+      // Switch to chosen process.  It is the process's job
+      // to release ptable.lock and then reacquire it
+      // before jumping back to us.
+      proc = p;
+      switchuvm(p);
+      p->state = RUNNING;
+      swtch(&cpu->scheduler, proc->context);
+      switchkvm();
+
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      proc = 0;
+    }
+    release(&ptable.lock);
+
+  }
+}
+
+```
+
+First, we need to add a decay variable of struct proc, used in the `scheduler()` to record the last time the process being runned. And every time the scheduler runs, it picks up the one has minimum decay to run and set the variable to MAXINT or something big, and for each processes, minus one. Here is the implementation:
+
+```c
+// Per-process state
+struct proc {
+  uint sz;                     // Size of process memory (bytes)
+  pde_t* pgdir;                // Page table
+  char *kstack;                // Bottom of kernel stack for this process
+  enum procstate state;        // Process state
+  int pid;                     // Process ID
+  struct proc *parent;         // Parent process
+  struct trapframe *tf;        // Trap frame for current syscall
+  struct context *context;     // swtch() here to run process
+  void *chan;                  // If non-zero, sleeping on chan
+  int killed;                  // If non-zero, have been killed
+  struct file *ofile[NOFILE];  // Open files
+  struct inode *cwd;           // Current directory
+  char name[16];               // Process name (debugging)
++ uint decay;                  // indicate the decayed time it runs
+};
+
+//PAGEBREAK: 32
+// Look in the process table for an UNUSED proc.
+// If found, change state to EMBRYO and initialize
+// state required to run in the kernel.
+// Otherwise return 0.
+static struct proc*
+allocproc(void)
+{
+  struct proc *p;
+  char *sp;
+
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    if(p->state == UNUSED)
+      goto found;
+  release(&ptable.lock);
+  return 0;
+
+found:
+  p->state = EMBRYO;
+  p->pid = nextpid++;
+  release(&ptable.lock);
+
+  // Allocate kernel stack.
+  if((p->kstack = kalloc()) == 0){
+    p->state = UNUSED;
+    return 0;
+  }
+  sp = p->kstack + KSTACKSIZE;
+  
+  // Leave room for trap frame.
+  sp -= sizeof *p->tf;
+  p->tf = (struct trapframe*)sp;
+  
+  // Set up new context to start executing at forkret,
+  // which returns to trapret.
+  sp -= 4;
+  *(uint*)sp = (uint)trapret;
+
+  sp -= sizeof *p->context;
+  p->context = (struct context*)sp;
+  memset(p->context, 0, sizeof *p->context);
+  p->context->eip = (uint)forkret;
+
++ p->decay = 59999;
+
+  return p;
+}
+```
+
+```c
+//PAGEBREAK: 42
+// Per-CPU process scheduler.
+// Each CPU calls scheduler() after setting itself up.
+// Scheduler never returns.  It loops, doing:
+//  - choose a process to run
+//  - swtch to start running that process
+//  - eventually that process transfers control
+//      via swtch back to the scheduler.
+void
+scheduler(void)
+{
+  struct proc *p, *f;
+  int minimum = 59999;
+
+  for(;;){
+    // Enable interrupts on this processor.
+    sti();
+
+    // Loop over process table looking for process to run.
+    acquire(&ptable.lock);
+    for(f = ptable.proc; f < &ptable.proc[NPROC]; f++){
+      if(f->state != RUNNABLE)
+        continue;
+      if(f->decay < minimum) {
+        minimum = f->decay;
+        p = f;
+      }
+      (f->decay)--;
+    }
+
+    p->decay = 59999;
+
+    // Switch to chosen process.  It is the process's job
+    // to release ptable.lock and then reacquire it
+    // before jumping back to us.
+    proc = p;
+    switchuvm(p);
+    p->state = RUNNING;
+    swtch(&cpu->scheduler, proc->context);
+    switchkvm();
+
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    proc = 0;
+    
+    release(&ptable.lock);
+
+  }
+}
+
+```

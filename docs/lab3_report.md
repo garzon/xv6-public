@@ -2,10 +2,11 @@
 
 ## tasks
 
-1. Physical memory management
+### Physical memory management
 - How to initialize kernel address space?
 - How to allocate and manage physical memory?
-2. Virtual memory management
+
+### Virtual memory management
 - What’s page table?
 - What’s the difference among virtual, linear, and physical Addresses?
 - How to map/translate virtual memory addresses to physical memory addresses?
